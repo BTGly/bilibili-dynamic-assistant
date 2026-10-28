@@ -56,16 +56,23 @@ def ensure_uid_column() -> None:
 
 
 def bind_uid(dynamic_id: str, uid: int | str | None) -> None:
-    """记录这条活动属于哪个抽奖 UP（uid）。0/空不覆盖已有值。"""
+    """记录这条活动属于哪个抽奖 UP（uid）。0/空不覆盖已有值。
+
+    富化时序号通常还没分配（面板建视图才补号），只 update 已有行会静默no-op——
+    10-27 刚加这个功能时就是这个时序问题，当天之后入库的行 uid 全为 0。
+    所以先确保有行，再写 uid。
+    """
     try:
         value = int(uid or 0)
     except (TypeError, ValueError):
         return
-    if not value:
+    did = str(dynamic_id).strip()
+    if not value or not did:
         return
     ensure_uid_column()
+    assign([did])
     with session_scope() as session:
-        row = session.get(ActivitySerialRow, str(dynamic_id).strip())
+        row = session.get(ActivitySerialRow, did)
         if row is not None and int(row.uid or 0) != value:
             row.uid = value
             session.commit()

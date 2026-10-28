@@ -287,10 +287,13 @@ def test_shared_rate_limit_between_processes(monkeypatch):
         values.append(float(out.strip()))
     values.sort()
     shutil.rmtree(home, ignore_errors=True)
-    # rps=2 → 期望间隔 0.5s。限流真失效时三个进程会挤在同一瞬间发（间隔≈0），
-    # 0.2 的门槛离 0 远、离 0.5 也远，既能抓到回归又不会被调度噪声误报。
+    # rps=2 → 目标间隔 0.5s、三进程总跨度约 1.0s。限流真失效时三个进程会挤在几十毫秒内发完，
+    # 所以主判据看**总跨度**；单个最小间隔只做兜底（600 多个用例一起跑、机器满载时，
+    # 单个间隔会被调度噪声压扁，10-27 与 10-28 各误报过一次，跨度则稳定）。
+    span = values[-1] - values[0]
     gaps = [b - a for a, b in zip(values, values[1:])]
-    assert min(gaps) >= 0.2
+    assert span >= 0.6, f"跨进程限流疑似失效：{gaps}"
+    assert min(gaps) >= 0.1, f"单个间隔过短：{gaps}"
 
 
 def test_llm_pool_limits_retry_and_distinguishes_read_timeout(monkeypatch):

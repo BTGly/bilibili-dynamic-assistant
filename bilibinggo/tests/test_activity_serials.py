@@ -53,6 +53,17 @@ def test_panel_shows_seq_and_search_by_hash_number_works():
     assert list_activities(q="不可能存在的奖品名")["items"] == []
 
 
+def test_bind_uid_works_before_the_serial_row_exists():
+    """富化阶段就绑 uid，那时序号还没分配；只 update 已有行会静默丢掉（10-27 的写法就是这样）。"""
+    did = "1200000000000000404"
+    replace_all_activities([item(did)])
+    from src.activity_serials import bind_uid, for_id, rows_with_uid
+
+    bind_uid(did, 700003)
+    assert for_id(did) is not None                      # 顺手把序号补上
+    assert (did, for_id(did), 700003) in rows_with_uid()
+
+
 def test_same_up_different_draws_are_all_picked():
     """UP uid 只用来归类与查找；一个 UP 短时间发几场抽奖是常态，去重只看链接身份。"""
     a = "1200000000000000301"
