@@ -32,8 +32,11 @@ from src.state_store import get_last_container, get_last_cv_id  # noqa: E402
 MODULES = (ds1_xiaozhuli, ds2_fanqiao, ds3_gongjuren, ds4_junming, ds5_hudong,
            ds6_nuomi, ds7_dajinli, ds8_qianchoujun, ds9_jinlisongrui)
 VIDEO_SOURCES = {"DS-1", "DS-8", "DS-9"}
-# 巡查补入库每轮上限（条链接），其余留给下一轮
-PATROL_INGEST_LIMIT = 25
+# 巡查补入库每轮上限（条链接），其余留给下一轮。
+# 10-28 三连改成每 10 分钟一格后从 25 降到 8：25 条实测要 9 分钟左右，而两格之间只有 10 分钟，
+# 再扣掉「离下一格不足 3 分钟就让车」的预留，25 条的批次几乎必然被切在起点，等于巡查再也不入库。
+# 8 条约 3 分钟，能在格点空隙里跑完；没跑完的留在检查点，下一轮或面板窗口继续。
+PATROL_INGEST_LIMIT = 8
 # 补入库是 @serialized_task，全程占着与面板共用的执行锁；离三连格点不足这个分钟数就收手，
 # 把锁让给调度器（10-28 00:15 那格就是被巡查占到 :18 才撞成 fatal 的）。
 INGEST_SLOT_RESERVE_MIN = 3.0
