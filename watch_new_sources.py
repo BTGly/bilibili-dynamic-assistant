@@ -252,16 +252,6 @@ def _triple_minutes() -> tuple[int, ...]:
         return (0, 15, 30, 45)
 
 
-def slot_minutes_text() -> str:
-    return "/".join(f":{m:02d}" for m in _triple_minutes())
-
-
-def _near_triple_slot(minute: int | None = None, minutes: int = 4) -> bool:
-    """当前分钟是否落在三连格点前后 minutes 分钟内。"""
-    m = time.localtime().tm_min if minute is None else int(minute)
-    return any(min(abs(m - s), 60 - abs(m - s)) <= minutes for s in _triple_minutes())
-
-
 def _minutes_to_next_slot() -> float:
     t = time.localtime()
     m = t.tm_min + t.tm_sec / 60.0
@@ -401,11 +391,9 @@ def main() -> int:
             report_duplicate_forwards()
             report_queue_audit()
             return 0
-        # 临近格点只影响「能不能占执行锁补入库」，不影响查源：查源是几个列表读，
-        # 整轮跳过会让人误以为「9 个源均与断点一致」（15:11 那轮就是这样白丢一次可见性）。
-        slot_close = _near_triple_slot(minutes=2)
-        if slot_close:
-            print(f"临近三连格点（{slot_minutes_text()}）：本轮照常查源，但只报不补入库，新容器留给下一轮/面板窗口")
+        # 不在这里做整轮的「临近格点」判定：定时任务从触发到我实际起跑有几分钟漂移，
+        # 起跑时刻判一次会把每轮都判成让车（21:19 距 21:20 只剩 1 分钟就是这样）。
+        # 该不该入库由下面每个源入库前的 runway 检查决定——那才是真正要占锁的时刻。
         llm_ok, llm_message = llm_available()
         if not llm_ok:
             print(f"LLM 不可用（{llm_message}），补入库跑不完，本轮跳过批量读，只做恢复复查")
@@ -424,17 +412,14 @@ def main() -> int:
                 continue
             if not marker:
                 continue
-            if slot_close:
+            runway = _minutes_to_next_slot()
+            if runway < INGEST_SLOT_RESERVE_MIN:
                 # 补入库带 @serialized_task，会一路占着与面板共用的执行锁；00:15 那格就是这么撞成 fatal 的。
-                print(f"[{source_id}] 发现新容器 {marker}，但临近三连格点，本轮不补入库（留给下一轮/面板窗口）")
+                print(f"[{source_id}] 发现新容器 {marker}，但距三连格点只剩 {runway:.1f} 分钟，"
+                      f"本轮不开这批（断点未推进，下轮或面板窗口继续）")
                 deferred.append(f"{source_id} {marker}")
-                continue
+                continue          # 剩下的源照常查，只是都不入库
             print(f"[{source_id}] 发现新容器 {marker}，开始补入库…")
-            if _minutes_to_next_slot() < INGEST_SLOT_RESERVE_MIN:
-                print(f"[{source_id}] 距三连格点只剩 {_minutes_to_next_slot():.1f} 分钟，"
-                      f"本轮不再开新批次（断点未推进，下轮继续）")
-                deferred.append(f"{source_id} {marker}")
-                break
             slot_yield = threading.Event()
 
             def _watch_slot(done, count, message):
