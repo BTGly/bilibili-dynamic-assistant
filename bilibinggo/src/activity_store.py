@@ -211,14 +211,29 @@ def append_activities(new_items: list[dict]) -> int:
             return len(to_add)
 
 
-def replace_all_activities(activities: list[dict]) -> None:
+# 整表替换的保险丝：生产路径传进来的永远是"全量列表"，一次少掉一大半必然是误操作。
+# 10-29 03:29 我拿临时脚本直接调 replace_all_activities([两条假数据])，把 1962 行库刷成 2 行。
+MASS_REPLACE_MIN_ROWS = 500
+
+
+def replace_all_activities(activities: list[dict], *, allow_mass_replace: bool = False) -> None:
+    rows = sorted(
+        [item for item in activities if isinstance(item, dict) and item.get("dynamic_id")],
+        key=lambda row: str(row.get("dynamic_id")),
+    )
+    if not allow_mass_replace:
+        from src.test_isolation import under_test_isolation
+
+        if not under_test_isolation():
+            with session_scope() as session:
+                current = int(session.exec(select(func.count()).select_from(ActivityRow)).one())
+            if len(rows) < MASS_REPLACE_MIN_ROWS and current >= MASS_REPLACE_MIN_ROWS and len(rows) < current // 2:
+                raise RuntimeError(
+                    f"拒绝把 {current} 条活动一次性替换成 {len(rows)} 条（看起来是误操作整表覆写）；"
+                    f"确认要这么做就显式传 allow_mass_replace=True"
+                )
     with _activity_lock:
-        _replace_all_unlocked(
-            sorted(
-                [item for item in activities if isinstance(item, dict) and item.get("dynamic_id")],
-                key=lambda row: str(row.get("dynamic_id")),
-            )
-        )
+        _replace_all_unlocked(rows)
 
 
 def remove_activity_ids(dynamic_ids: set[str]) -> int:
