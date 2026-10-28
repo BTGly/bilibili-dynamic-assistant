@@ -384,14 +384,11 @@ def main() -> int:
             report_duplicate_forwards()
             report_queue_audit()
             return 0
-        if _near_triple_slot():
-            # 00:15 那次撞车：巡查的补入库把执行锁占住，调度点三连时撞成 fatal（自愈但白丢一格）。
-            print("临近三连格点（:00/:15/:30/:45），本轮只体检不补入库，交给下一轮")
-            heal_account_gate(client)
-            report_ghost_joined()
-            report_duplicate_forwards()
-            report_queue_audit()
-            return 0
+        # 临近格点只影响「能不能占执行锁补入库」，不影响查源：查源是几个列表读，
+        # 整轮跳过会让人误以为「9 个源均与断点一致」（15:11 那轮就是这样白丢一次可见性）。
+        slot_close = _near_triple_slot()
+        if slot_close:
+            print("临近三连格点（:00/:15/:30/:45）：本轮照常查源，但只报不补入库，新容器留给下一轮/面板窗口")
         llm_ok, llm_message = llm_available()
         if not llm_ok:
             print(f"LLM 不可用（{llm_message}），补入库跑不完，本轮跳过批量读，只做恢复复查")
@@ -409,6 +406,11 @@ def main() -> int:
                 print(f"[{source_id}] 取最新容器失败：{str(exc)[:100]}")
                 continue
             if not marker:
+                continue
+            if slot_close:
+                # 补入库带 @serialized_task，会一路占着与面板共用的执行锁；00:15 那格就是这么撞成 fatal 的。
+                print(f"[{source_id}] 发现新容器 {marker}，但临近三连格点，本轮不补入库（留给下一轮/面板窗口）")
+                deferred.append(f"{source_id} {marker}")
                 continue
             print(f"[{source_id}] 发现新容器 {marker}，开始补入库…")
             if _minutes_to_next_slot() < INGEST_SLOT_RESERVE_MIN:

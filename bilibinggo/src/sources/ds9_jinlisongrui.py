@@ -7,6 +7,7 @@ from src.bilibili_client import BilibiliClient
 from src.sources.common import (
     CheckResult,
     extract_collection_links_with_hints,
+    extract_desc_link_time_hints,
     load_previous_output,
     normalize_activity_id,
     save_result as write_result,
@@ -84,6 +85,7 @@ def check_update(*, force: bool = False) -> CheckResult:
             )
             hints.update(comment_hints)
 
+        published_at = int(detail.get("pubdate") or latest.get("created") or 0)
         links = _dedupe(desc_links, comment_links)
         if not links:
             raise RuntimeError(
@@ -96,11 +98,12 @@ def check_update(*, force: bool = False) -> CheckResult:
             container_url=container_url,
             container_id=bvid,
             title=detail.get("title") or latest.get("title", ""),
-            published_at=int(detail.get("pubdate") or latest.get("created") or 0),
+            published_at=published_at,
             previous_container_url=previous,
             activity_links=links,
             checked_at=int(time.time()),
             link_hints=hints,
+            link_time_hints=extract_desc_link_time_hints(desc, reference_ts=published_at),
         )
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from src.bilibili_client import BilibiliClient
 from src.sources.common import (
     CheckResult,
+    extract_desc_link_time_hints,
     extract_t_bilibili_links_with_hints,
     load_previous_output,
     save_result as write_result,
@@ -46,6 +47,7 @@ def check_update(*, force: bool = False) -> CheckResult:
         detail = client.get_video_detail(bvid)
         desc = detail.get("desc") or ""
         links, hints = extract_t_bilibili_links_with_hints(desc)
+        published_at = int(detail.get("pubdate") or latest.get("created") or 0)
 
         return CheckResult(
             source_id=SOURCE_ID,
@@ -53,11 +55,12 @@ def check_update(*, force: bool = False) -> CheckResult:
             container_url=container_url,
             container_id=bvid,
             title=detail.get("title") or latest.get("title", ""),
-            published_at=int(detail.get("pubdate") or latest.get("created") or 0),
+            published_at=published_at,
             previous_container_url=previous,
             activity_links=links,
             checked_at=int(time.time()),
             link_hints=hints,
+            link_time_hints=extract_desc_link_time_hints(desc, reference_ts=published_at),
         )
 
 

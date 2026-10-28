@@ -6,6 +6,7 @@ from src.db.snapshots import load_ds_check_dict
 from src.sources.common import (
     CheckResult,
     extract_collection_links_with_hints,
+    extract_desc_link_time_hints,
     extract_t_bilibili_links_with_hints,
     save_result,
 )
@@ -177,3 +178,32 @@ def test_link_time_hints_use_lt_minute_and_stop_at_other_dates() -> None:
     assert "1253082551430414336" not in hints
     # 「结束:」字段不是开奖句，后面的链接不能沾上旧标题
     assert "1260846920304164882" not in hints
+
+
+def test_video_desc_link_time_hints_use_section_context() -> None:
+    """DS-1 那种视频简介：开奖语义写在分区标题上、日期写在链接行上，两边都要认。"""
+    desc = """【非官方抽奖】
+06月22日 https://t.bilibili.com/1205230628579049477
+10.30 20:00 https://t.bilibili.com/1205454770049908786
+"""
+    hints = extract_desc_link_time_hints(desc, reference_ts=PUBLISH_TS)
+    assert hints["1205230628579049477"]["lottery_time_precision"] == "date"
+    assert hints["1205454770049908786"]["lottery_time"].startswith("2026-10-30")
+    assert hints["1205454770049908786"]["lottery_time_precision"] == "minute"
+    # 证据留原样一行，事后能看出这个日期是谁写的、写在哪
+    assert hints["1205230628579049477"]["lottery_time_evidence"].startswith("06月22日")
+
+
+def test_video_desc_hints_ignore_previous_issue_and_unsectioned_lines() -> None:
+    desc = """【非官方抽奖】
+06月22日 https://t.bilibili.com/1205230628579049477
+【上期传送门】
+05月01日 https://t.bilibili.com/1299999999999999999
+"""
+    hints = extract_desc_link_time_hints(desc, reference_ts=PUBLISH_TS)
+    assert "1205230628579049477" in hints
+    assert "1299999999999999999" not in hints
+    # 没有分区标题的裸链接不猜：日期语义只来自 UP 自己标的分区
+    bare = extract_desc_link_time_hints(
+        "06月22日 https://t.bilibili.com/1205230628579049477", reference_ts=PUBLISH_TS)
+    assert bare == {}

@@ -169,6 +169,45 @@ def extract_t_bilibili_links_with_hints(desc: str) -> tuple[list[str], dict[str,
     return links, hints
 
 
+def extract_desc_link_time_hints(desc: str, *, reference_ts: int) -> dict[str, dict]:
+    """视频简介里「日期 + 链接」逐条排版的源（DS-1 那种）：把 UP 自己标的开奖日期贴到对应活动上。
+
+    合集那条通道只读 opus 段落，而且要求句子自带开奖语义；视频简介两句都不满足——
+    开奖语义在分区标题（【非官方抽奖】）上，日期在链接行上。10-28 实测 DS-1 最新一期
+    25 组「日期+链接」与库里已有的开奖日期 25/25 一致，语义成立。
+    「上期传送门」这类清单会先把分区关掉，避免往期日期沾到当期活动上。
+    """
+    if not desc or not reference_ts:
+        return {}
+    hints: dict[str, dict] = {}
+    section: LotteryHint | None = None
+    for raw in desc.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if EXCLUDE_CONTEXT_RE.search(line):
+            section = None
+        section = _section_hint_from_text(line, section)
+        if section is None:
+            continue
+        if not CONTAINER_DATE_RE.search(line):
+            continue
+        dynamic_ids = T_BILI_RE.findall(line)
+        if not dynamic_ids:
+            continue
+        value = _container_evidence_value(line, reference_ts)
+        if not value:
+            continue
+        precision = "minute" if re.search(r"\d{1,2}[:：]\d{2}", line) else "date"
+        for dynamic_id in dynamic_ids:
+            hints.setdefault(dynamic_id, {
+                "lottery_time": value,
+                "lottery_time_evidence": line,
+                "lottery_time_precision": precision,
+            })
+    return hints
+
+
 def extract_collection_links_with_hints(text: str) -> tuple[list[str], dict[str, LotteryHint]]:
     """从纯文本同时提取 t.bilibili.com 与 /opus/ 两种活动链接。
 
