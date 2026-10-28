@@ -1,0 +1,75 @@
+; Binggo Windows 安装程序（需先运行 packaging/windows/build.ps1）
+; 正式构建必须通过 ISCC /DAppVersion=x.y.z 注入版本（SSOT: src/app_paths.__version__）
+
+#define AppName "Binggo"
+#define AppPublisher "bilibili_binggo"
+#define AppURL "https://github.com/luovicter-collab/bilibinggo"
+#define AppExeName "Binggo.exe"
+#ifndef AppVersion
+  #define AppVersion "0.0.0-dev"
+#endif
+
+[Setup]
+AppId={{A4B8F2E1-6C3D-4E9A-9B12-7D5E8F0A1C2B}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+AppPublisherURL={#AppURL}
+AppSupportURL={#AppURL}
+AppUpdatesURL={#AppURL}/releases
+DefaultDirName={localappdata}\{#AppName}
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+OutputDir=..\..\dist
+OutputBaseFilename=Binggo-Setup-win64
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\{#AppExeName}
+PrivilegesRequired=lowest
+AppMutex=Global\BilibiliBinggoDashboard
+CloseApplications=force
+RestartApplications=yes
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+; 简体中文：若本机 Inno 已安装 ChineseSimplified.isl，可取消下一行注释
+; Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项:"; Flags: unchecked
+
+[Files]
+Source: "..\..\dist\Binggo\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function KillBinggoProcesses(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  { 结束主进程与 --serve 子进程，避免覆盖 Binggo.exe 时拒绝访问 (Win32 error 5) }
+  Exec('taskkill.exe', '/F /IM {#AppExeName} /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(800);
+  Result := True;
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  KillBinggoProcesses();
+  Result := True;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  KillBinggoProcesses();
+  Result := '';
+end;

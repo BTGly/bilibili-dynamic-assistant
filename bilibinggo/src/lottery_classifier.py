@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import re
+import threading
+import time
+from typing import Literal
+
+from src.bilibili_client import BilibiliClient
+from src.sources.common import opus_link
+
+LotteryType = Literal["转发抽奖", "预约抽奖", "互动抽奖", "充电抽奖"]
+
+PARTICIPATABLE_TYPES: tuple[LotteryType, ...] = ("互动抽奖", "转发抽奖", "预约抽奖")
+CLASSIFIABLE_TYPES: tuple[LotteryType, ...] = ("转发抽奖", "预约抽奖", "互动抽奖", "充电抽奖")
+UPOWER_BUSINESS_TYPE = 12
+CHARGING_SKIP_REASON = "充电专属抽奖，不参与"
+
+LOTTERY_NOTICE_URL = "https://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice"
+DYNAMIC_DETAIL_URL = "https://api.bilibili.com/x/polymer/web-dynamic/v1/detail"
+
+RESERVE_MARKER_RE = re.compile(r"reserve_total|ADDITIONAL_TYPE_RESERVE")
+LIVE_STREAM_RESERVE_JUMP_RE = re.compile(r"live\.bilibili\.com", re.I)
+
+_detail_api_lock = threading.Lock()
+_detail_api_enabled = True
+
+
+def is_detail_api_enabled() -> bool:
+    return _detail_api_enabled
+
+
+def disable_detail_api() -> None:
+    global _detail_api_enabled
+    with _detail_api_lock:
+        _detail_api_enabled = False
+
+
+def reset_detail_api_state() -> None:
+    global _detail_api_enabled
+    with _detail_api_lock:
+        _detail_api_enabled = True
+
+
+def _has_lottery_notice(client: BilibiliClient, dynamic_id: str, *, business_type: int) -> bool:
+    referer = opus_link(dynamic_id)
+    data = client.request_json(
+        LOTTERY_NOTICE_URL,
+        {"business_id": dynamic_id, "business_type": business_type},
+        referer=referer,
+        retries=1,
+    )
+    if data.get("code") != 0:
+        return False
+    notice = data.get("data") or {}
+    return bool(notice.get("lottery_id"))
+
+
+def _get_dynamic_additional(client: BilibiliClient, dynamic_id: str) -> dict | None:
+    if not is_detail_api_enabled():
+        return None
+
+    referer = opus_link(dynamic_id)
+    try:
+        data = client.get_json(
+            DYNAMIC_DETAIL_URL,
+            {"id": dynamic_id},
+            referer=referer,
+            retries=2,
+        )
+    except Exception:
+        return None
+    if data.get("code") != 0:
+        return None
+    item = (data.get("data") or {}).get("item") or {}
+    module_dynamic = (item.get("modules") or {}).get("module_dynamic") or {}
+    return module_dynamic.get("additional") or {}
+
+
+def _has_reserve_from_page(client: BilibiliClient, dynamic_id: str) -> bool:
+    try:
+        html = client.get_text(opus_link(dynamic_id), referer="https://www.bilibili.com", retries=1)
+    except Exception:
+        # get_text 抛 httpx.HTTPStatusError（动态删除时 opus 页返回 404），不是 RuntimeError。
+        return False
+    return bool(RESERVE_MARKER_RE.search(html))
+
+
+def _is_live_stream_reserve_only(reserve: dict) -> bool:
+    """纯直播预约卡片（无抽奖 notice 时可安全 skip）。与真·预约抽奖共用 reserve 结构。"""
+    if not reserve:
+        return False
+    jump_url = str(reserve.get("jump_url") or "")
+    if LIVE_STREAM_RESERVE_JUMP_RE.search(jump_url):
+        return True
+    desc1 = str((reserve.get("desc1") or {}).get("text") or "").strip()
+    if desc1 == "直播中":
+        return True
+    desc2 = str((reserve.get("desc2") or {}).get("text") or "")
+    if "人看过" in desc2:
+        return True
+    return False
+
+
+def _has_reserve_lottery_notice(client: BilibiliClient, dynamic_id: str) -> bool:
+    """预约抽奖：reserve.rid + lottery_notice(bt=10) 须有 lottery_id。"""
+    from src.lottery_api import fetch_lottery_notice, resolve_reserve_business
+
+    resolved = resolve_reserve_business(client, dynamic_id)
+    if not resolved:
+        return False
+    business_id, business_type = resolved
+    notice = fetch_lottery_notice(
+        client,
+        business_id=business_id,
+        business_type=business_type,
+        referer=opus_link(dynamic_id),
+        retries=2,
+    )
+    return bool(notice and notice.get("lottery_id"))
+
+
+def _classify_reserve_candidate(
+    client: BilibiliClient,
+    dynamic_id: str,
+    additional: dict | None,
+) -> Literal["预约抽奖", "skip", "not_reserve"]:
+    """旧逻辑命中 reserve 后的二次判别。"""
+    reserve = (additional or {}).get("reserve") if additional else None
+    has_reserve_block = bool(reserve)
+    if not has_reserve_block and not _has_reserve_from_page(client, dynamic_id):
+        return "not_reserve"
+
+    reserve = reserve or {}
+    if reserve and _is_live_stream_reserve_only(reserve) and not _has_reserve_lottery_notice(
+        client, dynamic_id
+    ):
+        return "skip"
+    if _has_reserve_lottery_notice(client, dynamic_id):
+        return "预约抽奖"
+    return "not_reserve"
+
+
+def _is_upower_lottery(additional: dict) -> bool:
+    return bool(
+        additional.get("upower_lottery")
+        or additional.get("type") == "ADDITIONAL_TYPE_UPOWER_LOTTERY"
+    )
+
+
+def is_charging_lottery_activity(item: dict) -> bool:
+    """判断活动是否为充电专属抽奖（不参与）。"""
+    if item.get("lottery_type") == "充电抽奖":
+        return True
+    try:
+        return int(item.get("business_type") or 0) == UPOWER_BUSINESS_TYPE
+    except (TypeError, ValueError):
+        return False
+
+
+def migrate_charging_lottery_fields(item: dict) -> bool:
+    """将误存的充电抽奖活动标记为跳过，返回是否有改动。"""
+    if not is_charging_lottery_activity(item):
+        return False
+    changed = False
+    if item.get("lottery_type") != "充电抽奖":
+        item["lottery_type"] = "充电抽奖"
+        changed = True
+    if not item.get("skipped"):
+        item["skipped"] = True
+        changed = True
+    if item.get("skip_reason") != CHARGING_SKIP_REASON:
+        item["skip_reason"] = CHARGING_SKIP_REASON
+        changed = True
+    return changed
+
+
+def migrate_stored_charging_lotteries(activities: list[dict]) -> int:
+    """批量修正已保存数据中的充电抽奖活动。"""
+    migrated = 0
+    for item in activities:
+        if isinstance(item, dict) and migrate_charging_lottery_fields(item):
+            migrated += 1
+    return migrated
+
+
+def classify_lottery_type(
+    client: BilibiliClient,
+    dynamic_id: str,
+    *,
+    hint: LotteryType | None = None,
+) -> LotteryType:
+    """根据 B 站 API 特征判定抽奖类型（短路 + 分区提示加速）。"""
+    additional = _get_dynamic_additional(client, dynamic_id)
+    if additional and _is_upower_lottery(additional):
+        return "充电抽奖"
+
+    if hint == "充电抽奖":
+        return "充电抽奖"
+
+    if _has_lottery_notice(client, dynamic_id, business_type=1):
+        return "互动抽奖"
+    if _has_lottery_notice(client, dynamic_id, business_type=UPOWER_BUSINESS_TYPE):
+        return "充电抽奖"
+
+    if hint == "转发抽奖":
+        return "转发抽奖"
+
+    if hint == "预约抽奖":
+        outcome = _classify_reserve_candidate(client, dynamic_id, additional)
+        if outcome == "预约抽奖":
+            return "预约抽奖"
+
+    if additional:
+        outcome = _classify_reserve_candidate(client, dynamic_id, additional)
+        if outcome == "预约抽奖":
+            return "预约抽奖"
+
+    outcome = _classify_reserve_candidate(client, dynamic_id, additional)
+    if outcome == "预约抽奖":
+        return "预约抽奖"
+
+    return "转发抽奖"
+
+
+def classify_lottery_type_safe(
+    client: BilibiliClient,
+    dynamic_id: str,
+    *,
+    hint: LotteryType | None = None,
+    retries: int = 1,
+) -> LotteryType:
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return classify_lottery_type(client, dynamic_id, hint=hint)
+        except Exception as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(1.0 * (attempt + 1))
+    raise RuntimeError(f"分类失败 dynamic_id={dynamic_id}: {last_error}") from last_error

@@ -1,0 +1,428 @@
+from __future__ import annotations
+
+import re
+import calendar
+import time
+from datetime import datetime, timedelta, timezone
+
+# 活动列表开奖时间统一格式：YYYY-MM-DD HH:mm（北京时间）
+LOTTERY_TIME_DISPLAY_FMT = "%Y-%m-%d %H:%M"
+LOTTERY_TIME_DISPLAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+BEIJING_TZ = timezone(timedelta(hours=8))
+SIX_MONTHS_SECONDS = 183 * 24 * 3600
+
+_WEEKDAY_SUFFIX_RE = re.compile(r"[（(][^）)]*[）)]")
+_NOISE_SUFFIX_RE = re.compile(r"(?:前|后|左右|左右开奖|直播.*|录屏.*|开奖.*)$")
+_CHINESE_WEEKDAY = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
+_RELATIVE_WEEKDAY_RE = re.compile(r"下(?:周|星期|礼拜)([一二三四五六日天])")
+_RELATIVE_TIME_RE = re.compile(
+    r"^(?:下|本|上)?(?:周|星期|礼拜)[一二三四五六日天]?$|"
+    r"^(?:明天|后天|大后天|今天|今晚|明晚)(?:[晚早]?\d{1,2}[:：点]\d{0,2})?$"
+)
+
+
+def is_standard_lottery_time_display(text: str) -> bool:
+    return bool(LOTTERY_TIME_DISPLAY_RE.fullmatch(text.strip()))
+
+
+def format_timestamp(ts: int | None) -> str:
+    """将 Unix 时间戳格式化为北京时间 YYYY-MM-DD HH:mm。"""
+    if not ts:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(ts), tz=BEIJING_TZ).strftime(LOTTERY_TIME_DISPLAY_FMT)
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _default_year() -> int:
+    return datetime.now(BEIJING_TZ).year
+
+
+def _compose(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> str:
+    return f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
+
+
+def _clean_text(text: str) -> str:
+    raw = text.strip()
+    raw = _WEEKDAY_SUFFIX_RE.sub("", raw)
+    raw = _NOISE_SUFFIX_RE.sub("", raw).strip()
+    return raw
+
+
+def _preprocess_lottery_text(text: str) -> str:
+    raw = text.strip()
+    raw = re.sub(r"\s+", "", raw)
+    raw = raw.replace("当天", "").replace("当日", "")
+    return raw
+
+
+def _resolve_relative_weekday(text: str, ref: datetime) -> str:
+    match = _RELATIVE_WEEKDAY_RE.search(text.strip())
+    if not match:
+        return ""
+    target = _CHINESE_WEEKDAY.get(match.group(1))
+    if target is None:
+        return ""
+    days_until_next_monday = (7 - ref.weekday()) % 7 or 7
+    next_monday = ref + timedelta(days=days_until_next_monday)
+    result_day = next_monday + timedelta(days=target)
+    clock = _parse_clock(text)
+    hour, minute = clock if clock else (0, 0)
+    return _compose(result_day.year, result_day.month, result_day.day, hour, minute)
+
+
+def is_relative_lottery_time_text(text: str) -> bool:
+    raw = _preprocess_lottery_text(text)
+    if not raw:
+        return False
+    if _RELATIVE_WEEKDAY_RE.search(raw):
+        return False
+    return bool(_RELATIVE_TIME_RE.search(raw))
+
+
+def _parse_clock(raw: str) -> tuple[int, int] | None:
+    """从中文片段解析时分，例如「晚8点」「18:30」「20点30分」。"""
+    evening = re.search(r"晚(?P<hour>\d{1,2})(?:[:：点](?P<minute>\d{2})|点(?P<minute2>\d{1,2})?|点)?", raw)
+    if evening:
+        hour = int(evening.group("hour"))
+        if hour < 12:
+            hour += 12
+        minute = int(evening.group("minute") or evening.group("minute2") or 0)
+        return hour, minute
+
+    colon = re.search(r"(?P<hour>\d{1,2})[:：](?P<minute>\d{2})", raw)
+    if colon:
+        return int(colon.group("hour")), int(colon.group("minute"))
+
+    point = re.search(r"(?P<hour>\d{1,2})点(?P<minute>\d{1,2})?分?", raw)
+    if point:
+        return int(point.group("hour")), int(point.group("minute") or 0)
+
+    if re.search(r"日晚$|晚上$", raw):
+        return 20, 0
+
+    return None
+
+
+def normalize_lottery_time_text(text: str, *, ref: datetime | None = None) -> str:
+    raw = _clean_text(_preprocess_lottery_text(text))
+    if not raw:
+        return ""
+    if ref is not None:
+        # Relative month dates are anchored to publication, never to refresh time.
+        if re.fullmatch(r"(?:本月|这个月)?月底", raw):
+            return _compose(ref.year, ref.month, calendar.monthrange(ref.year, ref.month)[1])
+        relative = _resolve_relative_weekday(raw, ref)
+        if is_standard_lottery_time_display(relative):
+            return relative
+    if is_relative_lottery_time_text(text):
+        return ""
+
+    if is_standard_lottery_time_display(raw):
+        return raw
+
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return f"{raw} 00:00"
+    if re.fullmatch(r"\d{4}/\d{2}/\d{2}", raw):
+        parts = raw.split("/")
+        return _compose(int(parts[0]), int(parts[1]), int(parts[2]))
+    if re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", raw):
+        parts = raw.split(".")
+        return _compose(int(parts[0]), int(parts[1]), int(parts[2]))
+
+    patterns: list[tuple[re.Pattern[str], str]] = [
+        (
+            re.compile(
+                r"^(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日\s*"
+                r"(?P<hour>\d{1,2})[:：点](?P<minute>\d{2})?$"
+            ),
+            "ymd_hm",
+        ),
+        (
+            re.compile(r"^(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日$"),
+            "ymd",
+        ),
+        (
+            re.compile(
+                r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})日\s*"
+                r"(?P<hour>\d{1,2})[:：点](?P<minute>\d{2})?$"
+            ),
+            "md_hm",
+        ),
+        (re.compile(r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})日$"), "md"),
+        (re.compile(r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})号$"), "md_hao"),
+        (
+            re.compile(r"^(?P<month>\d{1,2})\.(?P<day>\d{1,2})号?$"),
+            "dot_md",
+        ),
+        (
+            re.compile(
+                r"^(?P<month>\d{1,2})\.(?P<day>\d{1,2})\s*"
+                r"(?P<hour>\d{1,2})[:：](?P<minute>\d{2})?$"
+            ),
+            "dot_md_hm",
+        ),
+    ]
+
+    for pattern, kind in patterns:
+        match = pattern.match(raw)
+        if not match:
+            continue
+        groups = match.groupdict()
+        year = int(groups.get("year") or (ref.year if ref else _default_year()))
+        month = int(groups["month"])
+        day = int(groups["day"])
+        hour = int(groups.get("hour") or 0)
+        minute = int(groups.get("minute") or 0)
+        if kind in {"ymd", "md", "dot_md", "md_hao"}:
+            clock = _parse_clock(raw)
+            if clock:
+                hour, minute = clock
+            else:
+                hour = 0
+                minute = 0
+        return _compose(year, month, day, hour, minute)
+
+    loose = re.search(
+        r"(?P<year>\d{4})?年?(?P<month>\d{1,2})月(?P<day>\d{1,2})[日号]",
+        raw,
+    )
+    if loose:
+        year = int(loose.group("year") or (ref.year if ref else _default_year()))
+        month = int(loose.group("month"))
+        day = int(loose.group("day"))
+        clock = _parse_clock(raw)
+        if clock:
+            hour, minute = clock
+            return _compose(year, month, day, hour, minute)
+        return _compose(year, month, day)
+
+    dot_loose = re.search(r"(\d{1,2})\.(\d{1,2})", raw)
+    if dot_loose:
+        year = ref.year if ref else _default_year()
+        month = int(dot_loose.group(1))
+        day = int(dot_loose.group(2))
+        clock = _parse_clock(raw)
+        if clock:
+            return _compose(year, month, day, clock[0], clock[1])
+        return _compose(year, month, day)
+
+    return ""
+
+
+def lottery_time_unix(item: dict, *, ref_ts: int | None = None) -> int | None:
+    """解析活动开奖时间的 Unix 时间戳（北京时间语义）。"""
+    if has_inferred_time(item) or (item.get("conditions") or {}).get("lottery_time_source") == "legacy_unverified":
+        return None
+    lottery_time = item.get("lottery_time")
+    if lottery_time:
+        try:
+            return _valid_timestamp(lottery_time)
+        except (TypeError, ValueError):
+            pass
+
+    reference = _valid_timestamp(ref_ts or item.get("enriched_at")) or int(time.time())
+    ref = datetime.fromtimestamp(reference, tz=BEIJING_TZ)
+    conditions = item.get("conditions") or {}
+    raw_text = str(conditions.get("lottery_time_text") or "")
+    # Legacy text has no publication anchor: never manufacture its omitted year.
+    if not re.search(r"\d{4}\s*[年/.-]", raw_text):
+        return None
+    normalized = normalize_lottery_time_text(
+        raw_text,
+        ref=ref,
+    )
+    if not is_standard_lottery_time_display(normalized):
+        return None
+    try:
+        return int(datetime.strptime(normalized, LOTTERY_TIME_DISPLAY_FMT).replace(tzinfo=BEIJING_TZ).timestamp())
+    except ValueError:
+        return None
+
+
+def default_lottery_time_from_now(*, now: int | None = None) -> None:
+    """兼容旧入口：缺失时间保持未知，禁止制造默认日期。"""
+    return None
+
+
+def participation_base_timestamp(
+    item: dict,
+    participation: object | None = None,
+) -> int | None:
+    """推断开奖时间的基准时刻：优先参奖时间，其次入库时间。"""
+    updated_at = getattr(participation, "updated_at", None) if participation else None
+    if updated_at:
+        try:
+            return int(updated_at)
+        except (TypeError, ValueError):
+            pass
+    for key in ("enriched_at", "classified_at"):
+        raw = item.get(key)
+        if raw:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def resolve_effective_lottery_time_unix(
+    item: dict,
+    participation: object | None = None,
+    *,
+    persist: bool = False,
+) -> int | None:
+    """返回有依据的已保存时间，不按参与或入库时刻推断。"""
+    return lottery_time_unix(item)
+
+
+def infer_and_persist_lottery_time(item: dict, participation: object | None = None) -> bool:
+    """兼容旧入口：禁止为缺失时间补默认值。"""
+    return False
+
+
+def is_activity_past_end(
+    item: dict,
+    participation: object | None = None,
+    *,
+    now: int | None = None,
+) -> bool:
+    current = int(now if now is not None else time.time())
+    effective_ts = time_boundary(item, "lottery_time")
+    return bool(effective_ts and effective_ts <= current)
+
+
+def migrate_lottery_time_fields(item: dict) -> bool:
+    """修正单条已保存活动的时间字段，返回是否有改动。"""
+    if has_inferred_time(item) or (item.get("conditions") or {}).get("lottery_time_source") == "legacy_unverified":
+        return False
+    changed = False
+    conditions = item.get("conditions")
+    if not isinstance(conditions, dict):
+        conditions = {}
+        item["conditions"] = conditions
+        changed = True
+
+    ref_ts = _valid_timestamp(item.get("enriched_at")) or int(time.time())
+    raw_text = str(conditions.get("lottery_time_text") or "")
+
+    unix: int | None
+    try:
+        unix = int(item["lottery_time"]) if item.get("lottery_time") else None
+    except (TypeError, ValueError):
+        item.pop("lottery_time", None)
+        unix = None
+        changed = True
+
+    if not unix:
+        parsed = lottery_time_unix(item, ref_ts=ref_ts)
+        if parsed:
+            item["lottery_time"] = parsed
+            unix = parsed
+            changed = True
+
+    display = lottery_time_text(item)
+    if display:
+        if raw_text != display:
+            conditions["lottery_time_text"] = display
+            changed = True
+    elif raw_text:
+        conditions.setdefault("legacy_lottery_time_text", raw_text)
+        conditions["lottery_time_text"] = ""
+        changed = True
+
+    return changed
+
+
+def migrate_stored_lottery_times(activities: list[dict]) -> int:
+    """批量修正已保存活动的开奖时间字段。"""
+    migrated = 0
+    for item in activities:
+        if isinstance(item, dict) and migrate_lottery_time_fields(item):
+            migrated += 1
+    return migrated
+
+
+def lottery_time_text(item: dict) -> str:
+    timestamp = lottery_time_unix(item)
+    if timestamp is None:
+        return ""
+    text = format_timestamp(timestamp)
+    return text[:10] if (item.get("conditions") or {}).get("lottery_time_precision") == "date" else text
+
+
+def has_inferred_time(item: dict) -> bool:
+    return item.get("lottery_time_inferred") is True or (item.get("conditions") or {}).get("lottery_time_inferred") is True
+
+
+def _valid_timestamp(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        timestamp = int(value)
+        datetime.fromtimestamp(timestamp, BEIJING_TZ)
+        return timestamp if timestamp > 0 else None
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def participation_deadline_unix(item: dict) -> int | None:
+    return _valid_timestamp(item.get("participation_deadline") or (item.get("conditions") or {}).get("participation_deadline"))
+
+
+def time_boundary(item: dict, field: str) -> int | None:
+    timestamp = lottery_time_unix(item) if field == "lottery_time" else participation_deadline_unix(item)
+    if timestamp is None:
+        return None
+    precision = (item.get("conditions") or {}).get(field + "_precision")
+    if precision == "date":
+        moment = datetime.fromtimestamp(timestamp, BEIJING_TZ)
+        return int(moment.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()) + 86400
+    return timestamp
+
+
+def manual_time_approved(item: dict) -> bool:
+    review = item.get("time_review") or {}
+    return review.get("decision") == "allow_manual" and bool(str(review.get("evidence") or "").strip())
+
+
+def classify_activity_timing(item: dict, participation=None, *, now=None) -> tuple[str, str, bool]:
+    current = int(time.time() if now is None else now)
+    joined = bool((participation and getattr(participation, "user_status", "") == "已参加") or
+                  item.get("activity_status") == "已参加" or item.get("platform_participated") or item.get("reserve_reserved"))
+    draw_at = time_boundary(item, "lottery_time")
+    deadline = time_boundary(item, "participation_deadline")
+    unknown = draw_at is None
+    if item.get("draw_status_source") == "platform" and item.get("draw_status") == "ended":
+        return "已结束", "ended", unknown
+    if draw_at is not None and draw_at <= current:
+        return "已结束", "ended", False
+    draw_status = "active" if draw_at is not None else "unknown"
+    if deadline is not None and deadline <= current:
+        return ("已参加" if joined else "已截止"), draw_status, unknown
+    if joined:
+        return "已参加", draw_status, unknown
+    if unknown and not manual_time_approved(item):
+        return "待审核", draw_status, True
+    return "未参加", draw_status, unknown
+
+
+def normalize_activity_timing(item: dict, participation=None, *, now=None) -> bool:
+    status, draw, review = classify_activity_timing(item, participation, now=now)
+    values = {"activity_status": status, "draw_status": draw, "time_review_required": review}
+    changed = any(item.get(key) != value for key, value in values.items())
+    item.update(values)
+    if draw != "active" or review:
+        if item.get("draw_tag"):
+            changed = True
+        item["draw_tag"] = ""
+    return changed
+
+
+def time_field_display(item: dict, field: str) -> str:
+    timestamp = lottery_time_unix(item) if field == "lottery_time" else participation_deadline_unix(item)
+    if timestamp is None:
+        return "未知"
+    text = format_timestamp(timestamp)
+    return text[:10] if (item.get("conditions") or {}).get(field + "_precision") == "date" else text

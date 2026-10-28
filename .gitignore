@@ -1,0 +1,37 @@
+# —— 运行时与本地凭据（一律不入库）——
+bilibinggo/config/cookies.txt
+bilibinggo/config/llm.env
+bilibinggo/config/participate_settings.json
+bilibinggo/config/watch_users*.json
+bilibinggo/data/
+bilibinggo/var/
+
+# —— 体积大或可重新获得的产物 ——
+bilibinggo/.venv/
+bilibinggo/.tools/
+bilibinggo/web/frontend/node_modules/
+bilibinggo/web/static/dist/          # 前端构建产物：git clone 后跑 `cd bilibinggo/web/frontend && npm run build`
+*.tsbuildinfo
+
+# —— 本地工作产物 ——
+*.log
+logs/
+工作区归档/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# —— 个人台账与审核历史（含 UP 昵称/mid、本机路径、账号线索，不公开）——
+Windows实测问题记录.md
+审核决定*.jsonl
+参与执行记录*
+
+# —— 个人备忘 ——
+git.txt
+init.txt
+dashboard.png

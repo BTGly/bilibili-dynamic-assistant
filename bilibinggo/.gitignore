@@ -1,0 +1,71 @@
+# 本地配置（含敏感信息，勿提交）
+config/cookies.txt
+config/llm.env
+config/participate_settings.json
+config/watch_users.json
+config/watch_users_candidates.json
+
+# 运行时数据（活动缓存、参与记录、登录二维码等）
+data/
+var/
+
+# 本地备忘（个人 git 命令、启动/Tailscale 私记等）
+git.txt
+init.txt
+
+# 本地文档（不上传 GitHub）
+docs/data-source-analysis.md
+docs/implementation-plan.md
+docs/quickstart.md
+docs/star-history.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.venv/
+venv/
+env/
+
+# 测试与类型检查
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# 前端构建产物与依赖
+web/frontend/node_modules/
+web/static/dist/
+web/frontend/playwright-report/
+web/frontend/test-results/
+web/frontend/blob-report/
+web/frontend/playwright/.cache/
+
+# 临时文件
+*.tmp
+*.bak
+*.log
+
+# IDE / 编辑器
+.idea/
+.vscode/
+.cursor/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# —— 本机跑测留痕（含绝对路径与逐轮结果，不公开）——
+docs/reports/
