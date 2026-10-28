@@ -49,6 +49,8 @@ bilibili-dynamic-assistant/
 │                             llm_reread_cached_texts.py · reopen_verified_missing.py · rejoin_unverified_rows.py
 │                             时间/状态修复工具链（都先预演，写前整库备份，可回滚）
 ├── restart_dashboard.py      重启面板；autostart_binggo.py + register_binggo_guard.ps1 开机自启
+├── .github/workflows/ci.yml  CI（后端 pytest + 前端 vitest/tsc/vite）
+├── CHANGELOG.md              二次开发的变更记录
 ├── UPSTREAM.md               上游、基线提交与授权说明
 └── LICENSE                   MIT
 ```
@@ -115,4 +117,5 @@ Playwright e2e 没进 CI——依赖浏览器下载且易受网络抖动影响�
 ## License
 
 MIT — 见 [LICENSE](LICENSE)。上游版权归属、基线提交号与 `LICENSE` 缺失的处理见 [UPSTREAM.md](UPSTREAM.md)。
+二次开发的变更逐条记在 [CHANGELOG.md](CHANGELOG.md)。
 感谢上游 [luovicter-collab/bilibinggo](https://github.com/luovicter-collab/bilibinggo) 的作者与贡献者。

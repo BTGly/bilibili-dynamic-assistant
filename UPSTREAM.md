@@ -28,6 +28,13 @@
 
 实测与修复过程的完整台账在本地维护（含账号与 UP 昵称等信息，不随仓库发布）。
 
+## 未随本仓库发布的上游文件
+
+上游的 4 个 workflow（`ci.yml`、`pages.yml`、`release-macos.yml`、`release-windows.yml`）原本落在 `bilibinggo/.github/workflows/`。
+GitHub 只执行**仓库根目录**的 `.github/workflows/`，放在子目录里既不会运行、又容易让人误以为本仓库有打包发布流水线，
+因此从工作副本中移除，改由根目录 `.github/workflows/ci.yml` 承担（后端 pytest + 前端 vitest/tsc/vite）。
+需要上游那套 PyInstaller 打包/发布配置时，按上面的基线提交号去上游仓库取。
+
 ## 截图说明
 
 `bilibinggo/docs/images/` 与 `bilibinggo/assets/` 里的界面截图**来自上游**，其中的账号名、UID、关注数、活动数都是**上游作者本人的账号数据**，与本仓库维护者无关，也不代表本二次开发版的实际界面（本仓库的改动集中在时间判定、去重、归档、风控与运维脚本）。

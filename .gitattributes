@@ -1,0 +1,21 @@
+# 统一换行：文本按 LF 入库，检出时由 git 决定
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.ts   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.json text eol=lf
+
+# 二进制不做换行处理与 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.db binary
+*.woff2 binary
+*.pyc binary

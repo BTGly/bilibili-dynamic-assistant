@@ -1,0 +1,41 @@
+# 更新日志
+
+本文件只记录**二次开发部分**的对外变更；上游 Binggo 自身的演进以其仓库为准（见 `UPSTREAM.md`）。
+
+## v0.1.0 · 2026-10-28
+
+首个公开快照。基线：`luovicter-collab/bilibinggo@d7678f3cdcd893452d53ac4911e7118cea66fca5`。
+
+### 开奖时间判定
+- 加了一道**防幻觉闸门**（`src/time_evidence.py`）：LLM 抽出来的时间必须同时满足「正文里找得到字面证据 + 本地按原文重算结果一致 + 精度一致」才允许入库；只被推断出来的日期一律显示「未知」，也不参与排队排序。
+- 口语时间能读了：`晚8点`、`12点半`、`凌晨12点`、`10/30` 这种斜杠日期，以及跨行写法（`【开奖日期】` 换行后才是日期）。
+- 屏蔽了**不是开奖的日期**：发布会、开售、发售、上线、直播、展会、更新日志等语句里的日期不再被当成开奖时间。
+- 「参与截止」与「开奖」分开建模：只写了截止日期的活动排在队列尾部、但比「正文什么信息都没给」的活动靠前（截止是原文给的确定信息）。
+
+### 参与动作与重复防护
+- **按转发链根去重**：B 站会把「转发-of-转发」压回同一条链根，链根相同即视为同一条抽奖换壳，一轮只发一次；`conditions.repost_chain_ids` 记录链身份（`src/lottery_actions.py`、`web/activity_service.py`）。
+- 点赞 / 关注 / 收藏 / 转发 / 评论五步各自**先查平台真值**再动手，已经做过的只写「已…，跳过」，不重复发。
+- 本地留痕三张表（`participations` / `participation_actions` / `participation_guards`），中断后按进度续跑；巡查收尾挂「重复转发体检」，判定口径是动态链接而不是 UP。
+
+### 数据组织
+- **归档分层**（`src/activity_archive.py`）：只打标不搬数据，面板可切「当前 / 归档 / 全部」；参加过或已判定过期的历史行退出日常视野，但不影响参与判重。
+- **活动全局序号 + UP uid 绑定**（`src/activity_serials.py`）：面板标题前显示 `#序号 · UP<uid>·第k条`，命令行可按序号或按 UP 归类查（`activity_by_number.py`）。
+
+### 采集与入库守卫
+- 合集/专栏容器、以及源 UP 自己发的公告，在**采集阶段**就丢弃（无官方抽奖组件的 `DYNAMIC_TYPE_ARTICLE` 直接跳过），不再污染活动列表。
+- 容器日期兜底：条目缺少自身时间时，用合集页的发布时间作参考时间，避免跨年误判。
+
+### 风控与频率
+- 412 触发后记事件，6 小时内 ≥2 次则熔断批量补入库 3 小时，只做恢复探测；账号闸恢复靠只读探测判定。
+- 数据源刷新窗口改为每天 5 次（05/09/13/17/21），且**重启不再补跑**当天已完成的窗口（改判 `jobs` 表里的窗口完成记录）。
+- 巡查补入库每轮上限 25 条链接、小批低并发，并新增**让车**规则：逼近三连格点不足 3 分钟时不再开新批次，已在跑的批次在边界收手释放执行锁，断点不推进、下轮继续。
+
+### 运维工具（Windows 侧）
+- 面板重启（`restart_dashboard.py`，后端无热重载）、开机自启注册（`autostart_binggo.py` + `register_binggo_guard.ps1`）、队列审计与假队列清理（`review_queue_now.py`）、守卫/队列趋势快照与增长预警（`guard_trend.py`）。
+- 时间与状态修复工具链（`read_pages_for_times.py`、`apply_page_read_times.py`、`repair_stored_evidence_times.py`、`llm_reread_cached_texts.py`、`reopen_verified_missing.py`、`rejoin_unverified_rows.py`）：**一律先预演**，`--apply` 前用 sqlite backup API 整库备份并落逐行 before 快照，可回滚。
+
+### 质量与工程
+- 608 条离线 pytest（不碰账号、不碰生产库，`src/test_isolation.py` 强制路径隔离），Linux CI 与 Windows 本机结果一致。
+- 前端 `vitest + tsc --noEmit + vite build`；根目录 `.github/workflows/ci.yml` 跑后端与前端两条流水线。
+- 排队顺序类测试改为锚在「现在」的相对时间，避免跨过某个日历日期后测试自己烂掉。
+- 未随仓库发布：真实凭据、SQLite 数据库与备份、本机跑测留痕、个人实测台账。
