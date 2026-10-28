@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy import text
 from sqlmodel import select
 
 from src.db.models import ActivityRow, ActivitySerialRow
@@ -15,7 +16,12 @@ from src.db.session import session_scope
 
 
 def assign_with_session(session, dynamic_ids: list[str]) -> dict[str, int]:
-    """在同一 session 里补号（不 commit，交给调用方）。已有序号的原样返回。"""
+    """在同一 session 里补号（不 commit，交给调用方）。已有序号的原样返回。
+
+    取号走 `INSERT ... SELECT MAX(seq)+1` 一条语句：富化是多线程（workers=2）、巡查与面板又是
+    两个进程，"先读 max 再插入"在并发下会撞 UNIQUE —— 10-29 03:22 那批 deferred 就是这么来的
+    （bind_uid 开始补号之后才暴露）。单语句由 SQLite 的写锁串行化，取号与占号之间没有空隙。
+    """
     wanted = [str(x).strip() for x in dynamic_ids if str(x).strip()]
     if not wanted:
         return {}
@@ -24,22 +30,33 @@ def assign_with_session(session, dynamic_ids: list[str]) -> dict[str, int]:
     if missing:
         order = {str(row.dynamic_id): int(row.enriched_at or 0)
                  for row in session.exec(select(ActivityRow).where(ActivityRow.dynamic_id.in_(missing))).all()}
-        seq = max((int(row.seq) for row in session.exec(select(ActivitySerialRow)).all()), default=0) + 1
         now = int(time.time())
         for did in sorted(missing, key=lambda x: (order.get(x, 0), x)):
-            session.add(ActivitySerialRow(dynamic_id=did, seq=seq, assigned_at=now))
-            session.flush()
-            existing[did] = seq
-            seq += 1
+            session.execute(
+                text("INSERT INTO activity_serials (dynamic_id, seq, assigned_at, uid) "
+                     "SELECT :did, COALESCE(MAX(seq), 0) + 1, :now, 0 FROM activity_serials"),
+                {"did": did, "now": now},
+            )
+        session.flush()
+        existing = {str(row.dynamic_id): int(row.seq) for row in session.exec(select(ActivitySerialRow)).all()}
     return {did: existing[did] for did in wanted if did in existing}
 
 
 def assign(dynamic_ids: list[str]) -> dict[str, int]:
     """给没有序号的行按入库先后补号，返回 {dynamic_id: seq}（已有的原样返回）。"""
-    with session_scope() as session:
-        out = assign_with_session(session, dynamic_ids)
-        session.commit()
-        return out
+    from sqlalchemy.exc import IntegrityError
+
+    last: Exception | None = None
+    for _ in range(3):
+        try:
+            with session_scope() as session:
+                out = assign_with_session(session, dynamic_ids)
+                session.commit()
+                return out
+        except IntegrityError as exc:      # 另一个进程刚好占了同一个号：重读 max 再来一次
+            last = exc
+            time.sleep(0.05)
+    raise last  # type: ignore[misc]
 
 
 def ensure_uid_column() -> None:

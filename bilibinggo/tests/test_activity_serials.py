@@ -53,6 +53,19 @@ def test_panel_shows_seq_and_search_by_hash_number_works():
     assert list_activities(q="不可能存在的奖品名")["items"] == []
 
 
+def test_concurrent_assign_never_collides_on_seq():
+    """富化是多线程（workers=2）、巡查与面板又是两个进程，都会补号：
+    「先读 max 再插入」在并发下会撞 UNIQUE（10-29 03:22 实测过一批 deferred）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ids = [f"120000000000000{i:04d}" for i in range(12)]
+    replace_all_activities([item(did) for did in ids])
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(assign, [[did] for did in ids]))
+    seqs = [next(iter(result.values())) for result in results]
+    assert len(set(seqs)) == len(ids)
+
+
 def test_bind_uid_works_before_the_serial_row_exists():
     """富化阶段就绑 uid，那时序号还没分配；只 update 已有行会静默丢掉（10-27 的写法就是这样）。"""
     did = "1200000000000000404"
