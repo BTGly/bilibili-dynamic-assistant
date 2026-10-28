@@ -93,6 +93,10 @@ cd bilibinggo
 cd web/frontend && npm run build                       # 前端构建
 ```
 
+CI（`.github/workflows/ci.yml`，push / PR 触发）跑两件事：`bilibinggo` 下的 pytest（先现场构建前端，
+因为面板的静态托管测试需要 `web/static/dist`），以及前端的 `vitest + tsc --noEmit + vite build`。
+Playwright e2e 没进 CI——依赖浏览器下载且易受网络抖动影响，本地 `npm run test:e2e` 可跑。
+
 约定：**任何写库操作都要先预演**，`--apply` 前用 sqlite backup API 整库备份、逐行 before 快照落 `data/_*_log.json`，可回滚；
 测试通过 `BINGGO_HOME` + `BINGGO_TEST_DATA_ROOT` 指向临时目录，禁止碰生产数据（`src/test_isolation.py` 强制）。
 

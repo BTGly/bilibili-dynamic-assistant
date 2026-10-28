@@ -1,0 +1,83 @@
+name: CI
+
+# 本仓库的根目录是二次开发的工作区，应用本体在 bilibinggo/，
+# 所以所有步骤都要显式带 working-directory（上游那份 ci.yml 是按仓库根即应用根写的，不能直接照搬）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: 后端 pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bilibinggo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: bilibinggo/requirements*.txt
+
+      - name: Install Python deps
+        run: python -m pip install -r requirements-dev.txt
+
+      # 面板的静态托管测试需要 web/static/dist（dist 不入库，必须现场构建）
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bilibinggo/web/frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: bilibinggo/web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Pytest
+        run: python -m pytest -q --tb=short
+
+  frontend:
+    name: 前端 vitest + tsc + vite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bilibinggo/web/frontend/package-lock.json
+
+      - name: Install
+        working-directory: bilibinggo/web/frontend
+        run: npm ci
+
+      - name: Unit tests
+        working-directory: bilibinggo/web/frontend
+        run: npm test
+
+      - name: Build
+        working-directory: bilibinggo/web/frontend
+        run: npm run build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: bilibinggo/web/static/dist
+          retention-days: 3
