@@ -125,6 +125,10 @@ def test_clock_after_date_needs_a_clock_marker():
     assert _clock_after("10元红包") is None
     assert literal_date_value("2026 年 10 月 30 日晚8点", reference=None) == ("2026-10-30 20:00", "minute")
     assert literal_date_value("10月30日 10元红包", reference=None) == ("2026-10-30 00:00", "date")
+    # 「11.27号中午12点」：点分日期带「号」时，紧跟的钟点以前会被整段丢掉（10-28 实测 1263827200280363017）
+    assert literal_date_value("11.27号中午12点", reference=None) == ("2026-11-27 12:00", "minute")
+    assert literal_date_value("我会在11.27号中午12点，抽取一位幸运观众", reference=None) == ("2026-11-27 12:00", "minute")
+    assert literal_date_value("9.30号", reference=None) == ("2026-09-30 00:00", "date")
 
 
 def test_date_only_llm_answer_is_accepted_as_midnight():

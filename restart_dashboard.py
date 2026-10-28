@@ -174,8 +174,10 @@ def restart(*, force: bool, backup: bool, rps: str = "") -> int:
     except ProbeError as exc:
         print(f"进程探针失败（{exc}），无法确认现有实例；什么都没动。", file=sys.stderr)
         return 5
+    auto_was_running = False
     if pids:
         auto = http_json("/api/auto/status") or {}
+        auto_was_running = auto.get("state") == "running"
         jobs = running_jobs()
         if auto.get("state") == "running" and not force:
             print("调度器正在运行，重启会打断它。确认无误后加 --force 再来。")
@@ -266,6 +268,22 @@ def restart(*, force: bool, backup: bool, rps: str = "") -> int:
     except urllib.error.HTTPError as exc:
         guards = exc.code
     print(f"GET /api/participation/guards -> {guards}")
+    # 重启会把调度器一起带走（面板重启后是 idle，不会自己开），10-28 就出现过
+    # 「重启完到下一格之间没人参加」——重启前是开着的，这里就必须负责开回来。
+    if auto_was_running:
+        now_state = (http_json("/api/auto/status") or {}).get("state")
+        if now_state != "running":
+            try:
+                req = urllib.request.Request(BASE + "/api/auto/start", method="POST",
+                                             data=b"{}", headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    back = json.loads(resp.read().decode("utf-8", "replace")).get("state")
+                print(f"重启前调度器是开着的 → 已自动重新开启：state={back}")
+            except Exception as exc:
+                print(f"！！重启前调度器是开着的，但自动重开失败（{str(exc)[:80]}）；"
+                      f"到点不会参加，请手动 POST /api/auto/start", file=sys.stderr)
+        else:
+            print("重启前调度器是开着的 → 现在仍是 running，无需重开。")
     show_status()
     print("\n最后一步：浏览器按 Ctrl+F5 硬刷新，否则还是旧 JS。")
     return 0
