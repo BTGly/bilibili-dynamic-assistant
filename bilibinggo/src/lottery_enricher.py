@@ -319,6 +319,28 @@ def _build_from_notice(
     return apply_p2_to_activity(activity, participation=participation)
 
 
+def _note_relative_time_candidate(dynamic_id: str, content_text: str) -> None:
+    """纯统计：正文疑似写了相对开奖说法（两周后 / 3 天后 / 明天…）却没拿到时间。
+
+    存量样本证明不了这种写法在新增里常不常见（台账 §79），所以先攒真实频率再决定要不要
+    给解析器加换算。任何失败都不许影响入库，因此整段吞异常。
+    """
+    try:
+        from src.db.engine import db_path
+        from src.relative_time_stats import (
+            RELATIVE_TIME_RE,
+            note_candidate,
+            relative_snippet,
+            stats_path,
+        )
+
+        if not RELATIVE_TIME_RE.search(content_text or ""):
+            return
+        note_candidate(stats_path(db_path().parent), dynamic_id, relative_snippet(content_text))
+    except Exception:  # noqa: BLE001 - 统计不许拖垮入库
+        pass
+
+
 def enrich_forward_activity(
     client: BilibiliClient,
     *,
@@ -373,6 +395,8 @@ def enrich_forward_activity(
         raise EnrichSkippedError(dynamic_id)
 
     lottery_ts, conditions = _lottery_time_from_llm_parse(parsed)
+    if not lottery_ts:
+        _note_relative_time_candidate(dynamic_id, content_text)
     # 转发链上的动态 id：B 站把「转发型抽奖」的转发压到链根显示，同一条链的两条活动
     # 若在同一轮里都被选中，就会对同一个根动态转发两遍（10-26 实测 HUGKIS/黑爵）。
     from src.lottery_actions import dynamic_chain_ids

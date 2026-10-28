@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from web.auto_config import ALLOWED_CLICK_ACTIONS
-from web.auto_config import REFRESH_HOURS
+from web.auto_config import REFRESH_HOURS, TRIPLE_MINUTES
 from web.auto_scheduler import AutoScheduler, CollisionError, _is_hard_failure, _next_slot, _probe_job
 from web.job_runner import JobRunner, JobStatus
 
@@ -231,31 +231,36 @@ def test_next_slot_triple_minute() -> None:
     assert slot["action_label"] == "三连参与"
 
 
-def test_triple_cadence_is_fifteen_minutes() -> None:
-    now = datetime(2026, 7, 17, 2, 1, tzinfo=timezone(timedelta(hours=8)))
+def test_triple_cadence_follows_the_configured_minutes() -> None:
+    """格点间隔跟着 TRIPLE_MINUTES 走（10-28 从每 15 分钟改成每 10 分钟），测试不该写死数字。"""
+    start = min((m for m in range(60) if m not in TRIPLE_MINUTES), default=1)
+    now = datetime(2026, 7, 17, 2, start, tzinfo=timezone(timedelta(hours=8)))
     first = _next_slot(now)
     second = _next_slot(datetime.fromtimestamp(first["at_unix"], tz=timezone(timedelta(hours=8))))
-    assert first["minute"] == 15
-    assert second["minute"] == 30
-    assert second["hour"] == 2
+    assert first["kind"] == "triple"
+    assert first["minute"] == min(m for m in TRIPLE_MINUTES if m > start)
+    assert second["minute"] in TRIPLE_MINUTES and second["minute"] != first["minute"]
 
 
-def test_refresh_hour_still_has_its_quarter_hour_triple() -> None:
-    """9:00 那一分钟让给刷新批次，但 9:15 必须照常三连 —— 三连是严格每 15 分钟。"""
+def test_refresh_hour_still_has_its_triple_slots() -> None:
+    """9:00 那一分钟让给刷新批次，但之后的格点必须照常三连。"""
     slot = _next_slot(datetime(2026, 7, 17, 9, 5, tzinfo=CN))
     assert slot["kind"] == "triple"
-    assert (slot["hour"], slot["minute"]) == (9, 15)
+    assert slot["minute"] == min(m for m in TRIPLE_MINUTES if m > 5)
 
 
-def test_fifteen_minute_cadence_holds_across_the_refresh_hour() -> None:
-    """08:46 → 09:00（批次）→ 09:15（三连）→ 09:30，间隔始终是 15 分钟。"""
+def test_triple_cadence_holds_across_the_refresh_hour() -> None:
+    """08:46 → 09:00（批次）→ 三连 → 三连：整点跑批次不会让三连少一格。"""
     marks = []
-    now = datetime(2026, 7, 17, 8, 46, tzinfo=CN)
+    # 从上一小时最后一格之后起跑，下一站才是整点批次（改格点集合时这个起点会自动跟着走）
+    now = datetime(2026, 7, 17, 8, max(TRIPLE_MINUTES) + 1, tzinfo=CN)
     for _ in range(3):
         slot = _next_slot(now)
         marks.append((slot["kind"], slot["hour"], slot["minute"]))
         now = datetime.fromtimestamp(slot["at_unix"], tz=CN) + timedelta(minutes=1)
-    assert marks == [("refresh", 9, 0), ("triple", 9, 15), ("triple", 9, 30)]
+    second = min(m for m in TRIPLE_MINUTES if m > 0)
+    third = min(m for m in TRIPLE_MINUTES if m > second)
+    assert marks == [("refresh", 9, 0), ("triple", 9, second), ("triple", 9, third)]
 
 
 CN = timezone(timedelta(hours=8))
