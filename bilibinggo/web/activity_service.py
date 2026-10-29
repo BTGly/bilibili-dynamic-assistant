@@ -203,6 +203,8 @@ def _normalize_activity(
         "participation_deadline_unix": participation_deadline_unix(item),
         "repost_chain_ids": [str(x) for x in ((item.get("conditions") or {}).get("repost_chain_ids") or [])],
         "lottery_time_evidence": (item.get("conditions") or {}).get("lottery_time_evidence", ""),
+        # 时间未知的行要靠"发布多久了 / 证据里的日期是否已过"判断该不该参加，锚点必须带上
+        "time_reference_ts": (item.get("conditions") or {}).get("time_reference_ts") or item.get("enriched_at"),
         "participation_deadline_evidence": (item.get("conditions") or {}).get("participation_deadline_evidence", ""),
         "time_review_required": draw_at is None,
         "time_review": item.get("time_review") or {},
@@ -452,6 +454,47 @@ def _filtered_activity_rows(
     return normalized
 
 
+# 开奖时间未知的行原本"照样参加、只排队尾"（10-26 政策）。10-29 实测暴露它的反面：
+# 一加16 那 6 条正文只写「10 月 12 日 19:00（发布会）」，被非开奖屏蔽判成未知，
+# 于是 10-29 还去转发已经开完奖的活动，转了 6 次全无效。未知不等于"还来得及"。
+UNKNOWN_STALE_DAYS = 14
+
+
+def unknown_time_is_stale(row: dict[str, Any], *, now: float | None = None) -> str:
+    """开奖时间未知的行，什么时候算"太晚了、参加也没意义"。返回原因，空串表示不算过期。
+
+    只用原文里已有的信息判断：证据句里那个日期（用抽取器同一套算法复算）是否已过，
+    以及动态发布是否超过 UNKNOWN_STALE_DAYS 天。不引入任何对抽奖语义的猜测。
+    """
+    if row.get("lottery_time_unix"):
+        return ""
+    current = now if now is not None else time.time()
+    evidence = str(row.get("lottery_time_evidence") or "").strip()
+    ref = row.get("time_reference_ts")
+    try:
+        ref_ts = int(ref) if ref else 0
+    except (TypeError, ValueError):
+        ref_ts = 0
+    if evidence:
+        from datetime import datetime as _dt
+
+        from src.lottery_time import BEIJING_TZ
+        from src.time_evidence import literal_date_value
+
+        reference = _dt.fromtimestamp(ref_ts, BEIJING_TZ) if ref_ts else None
+        value, _precision = literal_date_value(evidence, reference=reference)
+        if value:
+            try:
+                stamp = _dt.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING_TZ).timestamp()
+            except ValueError:
+                stamp = None
+            if stamp and stamp < current:
+                return f"证据里的日期已过（{value}）"
+    if ref_ts and current - ref_ts > UNKNOWN_STALE_DAYS * 86400:
+        return f"发布已超 {UNKNOWN_STALE_DAYS} 天"
+    return ""
+
+
 def _pick_triple_from_rows(
     rows: list[dict[str, Any]],
     *,
@@ -473,6 +516,9 @@ def _pick_triple_from_rows(
         if str(row.get("activity_status") or "") not in ("未参加", "待审核"):
             continue
         if not row.get("can_participate") or row.get("auto_can_participate") is False:
+            continue
+        if unknown_time_is_stale(row):
+            # 未知 ≠ 还来得及：日期已过或发布太久的，转发了也不会中奖，只留人工
             continue
         dynamic_id = str(row.get("dynamic_id") or "").strip()
         if not is_valid_dynamic_id(dynamic_id) or dynamic_id in seen_ids:

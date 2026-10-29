@@ -332,7 +332,7 @@ def report_queue_audit() -> None:
     """只读归队审计（10-26 起的长期规则）：开奖时间在现在之后的行必须在三连队列里；
     不在的就是漏，立刻报出来。参加前置检查仍会在真正参加前按 B 站实际状态再判一次。"""
     try:
-        from web.activity_service import list_activities, pick_triple_participate_targets
+        from web.activity_service import list_activities, pick_triple_participate_targets, unknown_time_is_stale
     except Exception as exc:
         print(f"归队审计跳过：{type(exc).__name__}")
         return
@@ -343,6 +343,7 @@ def report_queue_audit() -> None:
     queued_keys = {chain_key(row) for row in targets}
     now = time.time()
     missing = []
+    held_out = []
     seen = set()
     for status in ("未参加", "待审核"):
         page = 1
@@ -356,6 +357,11 @@ def report_queue_audit() -> None:
                 draw_at = row.get("lottery_time_unix")
                 if draw_at is not None and draw_at <= now:
                     continue
+                stale = unknown_time_is_stale(row)
+                if stale:
+                    # 时间未知但"证据日期已过/发布太旧"：取队列故意不收，不是漏
+                    held_out.append(f"{did}:{stale}")
+                    continue
                 if did in queued:
                     continue
                 if chain_key(row) in queued_keys:
@@ -365,7 +371,8 @@ def report_queue_audit() -> None:
                 break
             page += 1
     print(f"归队审计：队列 {len(queued)} 条｜开奖未过期却不在队列 {len(missing)} 条"
-          + (f" → {missing[:5]}" if missing else "（合格）"))
+          + (f" → {missing[:5]}" if missing else "（合格）")
+          + (f"｜判为过期不参加 {len(held_out)} 条（例：{held_out[:2]}）" if held_out else ""))
 
 
 def main() -> int:
