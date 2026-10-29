@@ -52,8 +52,9 @@ def test_evidence_date_in_the_future_is_not_stale() -> None:
     assert unknown_time_is_stale(row) == ""
 
 
-def test_no_evidence_but_ancient_publish_is_stale() -> None:
-    assert "14 天" in unknown_time_is_stale({"lottery_time_unix": None, "time_reference_ts": ts(-20)})
+def test_no_evidence_is_never_called_stale_however_old() -> None:
+    """10-29 你否掉了"发布超 14 天就不参加"：正文没写时间的活动多老都可能仍在抽，天数不是证据。"""
+    assert unknown_time_is_stale({"lottery_time_unix": None, "time_reference_ts": ts(-30)}) == ""
     assert unknown_time_is_stale({"lottery_time_unix": None, "time_reference_ts": ts(-2)}) == ""
 
 
@@ -64,11 +65,11 @@ def test_known_future_draw_is_never_called_stale() -> None:
 
 def test_stale_unknown_rows_are_kept_out_of_the_triple_queue() -> None:
     replace_all_activities([
-        item(STALE, evidence="10 月 12 日 19:00", ref_days=-19),      # 证据日期已过
-        item(ANCIENT, evidence="", ref_days=-30),                     # 发布太旧
+        item(STALE, evidence="10 月 12 日 19:00", ref_days=-19),      # 证据日期已过 → 不参加
+        item(ANCIENT, evidence="", ref_days=-30),                     # 很旧但没写时间 → 照参加
         item(LIVE, evidence="", ref_days=-1),                         # 未知但很新 → 该参加
         item(FUTURE, evidence="", ref_days=-1, when=ts(5)),           # 有未来开奖时间
     ])
     picked = {row["dynamic_id"] for row in pick_triple_participate_targets(limit=10)}
-    assert picked == {LIVE, FUTURE}
-    assert STALE not in picked and ANCIENT not in picked
+    assert picked == {LIVE, FUTURE, ANCIENT}
+    assert STALE not in picked

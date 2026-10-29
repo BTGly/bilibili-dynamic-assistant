@@ -455,16 +455,16 @@ def _filtered_activity_rows(
 
 
 # 开奖时间未知的行原本"照样参加、只排队尾"（10-26 政策）。10-29 实测暴露它的反面：
-# 一加16 那 6 条正文只写「10 月 12 日 19:00（发布会）」，被非开奖屏蔽判成未知，
+# 一加16 那 6 条正文只写「10 月 12 日 19:00（发布会）」，被判"未知"后照样参加，
 # 于是 10-29 还去转发已经开完奖的活动，转了 6 次全无效。未知不等于"还来得及"。
-UNKNOWN_STALE_DAYS = 14
+# 只挡"句里有日期且该日期已过"这一种确定证据；不按发布天数一刀切——10-29 你否掉了
+# 14 天规则：正文没写时间的活动多老都可能仍在抽，天数不是证据。
 
 
 def unknown_time_is_stale(row: dict[str, Any], *, now: float | None = None) -> str:
     """开奖时间未知的行，什么时候算"太晚了、参加也没意义"。返回原因，空串表示不算过期。
 
-    只用原文里已有的信息判断：证据句里那个日期（用抽取器同一套算法复算）是否已过，
-    以及动态发布是否超过 UNKNOWN_STALE_DAYS 天。不引入任何对抽奖语义的猜测。
+    只用原文里已有的信息判断：证据句里那个日期（用抽取器同一套算法复算）是否已经过去。
     """
     if row.get("lottery_time_unix"):
         return ""
@@ -475,24 +475,22 @@ def unknown_time_is_stale(row: dict[str, Any], *, now: float | None = None) -> s
         ref_ts = int(ref) if ref else 0
     except (TypeError, ValueError):
         ref_ts = 0
-    if evidence:
-        from datetime import datetime as _dt
+    if not evidence:
+        return ""
+    from datetime import datetime as _dt
 
-        from src.lottery_time import BEIJING_TZ
-        from src.time_evidence import literal_date_value
+    from src.lottery_time import BEIJING_TZ
+    from src.time_evidence import literal_date_value
 
-        reference = _dt.fromtimestamp(ref_ts, BEIJING_TZ) if ref_ts else None
-        value, _precision = literal_date_value(evidence, reference=reference)
-        if value:
-            try:
-                stamp = _dt.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING_TZ).timestamp()
-            except ValueError:
-                stamp = None
-            if stamp and stamp < current:
-                return f"证据里的日期已过（{value}）"
-    if ref_ts and current - ref_ts > UNKNOWN_STALE_DAYS * 86400:
-        return f"发布已超 {UNKNOWN_STALE_DAYS} 天"
-    return ""
+    reference = _dt.fromtimestamp(ref_ts, BEIJING_TZ) if ref_ts else None
+    value, _precision = literal_date_value(evidence, reference=reference)
+    if not value:
+        return ""
+    try:
+        stamp = _dt.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=BEIJING_TZ).timestamp()
+    except ValueError:
+        return ""
+    return f"证据里的日期已过（{value}）" if stamp < current else ""
 
 
 def _pick_triple_from_rows(
