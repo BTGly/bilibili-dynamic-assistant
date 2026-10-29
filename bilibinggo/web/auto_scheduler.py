@@ -88,8 +88,9 @@ def refresh_window_done_keys(now: datetime) -> set[str]:
 
 
 def recent_risk_refresh_failure(now: datetime | None = None) -> bool:
-    """读持久化的 jobs 表判断「最近 3 小时内有风控类刷新失败」——
-    fatal 后重启、巡查自愈都绕不过它（内存里的 last_try 会被重启清掉）。"""
+    """读持久化的 jobs 表判断「最近 RISK_REFRESH_BACKOFF（当前 6 小时）内有风控类刷新失败」——
+    fatal 后重启、巡查自愈都绕不过它（内存里的 last_try 会被重启清掉）。
+    10-29 05:00 那次风控中断之后，09:00 窗口就是被它挡住的（下一个真正尝试是 13:00）。"""
     from sqlmodel import select
 
     from src.db.models import JobRow
