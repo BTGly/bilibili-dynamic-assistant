@@ -18,19 +18,34 @@ ALARM_DELTA = 15  # 单次巡查 review/deferred 增长超过这个数就预警
 sys.path.insert(0, str(ROOT / "bilibinggo"))
 
 
-def live_triple_queue_depth() -> tuple[int, int]:
+def live_triple_queue_depth() -> tuple[int, int, int]:
     """三连队列真实深度（含 10-26 起入队的时间未知行）；纯本地读库，不发 B 站请求。
-    返回 (当前能进的条数, 其中时间未知)；账号闸暂停时前者会是 0，
-    所以另外报一个「面板未参加+待审核」总量，避免把「被闸挡住」读成「没活干」。"""
+    返回 (当前能进的条数, 其中时间未知, 其中"发布超 7 天且正文没写时间")；账号闸暂停时
+    第一项会是 0，所以另外报一个「面板未参加+待审核」总量，避免把「被闸挡住」读成「没活干」。"""
     try:
         from web.activity_service import list_activities, pick_triple_participate_targets
 
         queue = pick_triple_participate_targets(limit=200)
         backlog = sum(int(list_activities(status=st, page_size=1).get("total") or 0) for st in ("未参加", "待审核"))
     except Exception:
-        return -1, -1
+        return -1, -1, -1
     print(f"   面板潜在可参加（未参加+待审核）={backlog}")
-    return len(queue), sum(1 for row in queue if row.get("lottery_time_unix") is None)
+    now = time.time()
+    unknown = 0
+    stale_unknown = 0
+    for row in queue:
+        if row.get("lottery_time_unix"):
+            continue
+        unknown += 1
+        # 转发型抽奖在 B 站没有官方「已开奖」状态（draw_status=unknown），能不能赶上只能看正文日期；
+        # 正文没写就属于"赌一把"。这一项只统计、不改策略，涨多了再谈规则（10-29 一加16 那 6 条）。
+        ref = row.get("time_reference_ts")
+        try:
+            if ref and now - int(ref) > 7 * 86400:
+                stale_unknown += 1
+        except (TypeError, ValueError):
+            continue
+    return len(queue), unknown, stale_unknown
 
 
 def counts() -> dict[str, int]:
@@ -52,6 +67,7 @@ def counts() -> dict[str, int]:
     queue = live_triple_queue_depth()
     out["三连队列深度"] = queue[0]
     out["其中时间未知"] = queue[1]
+    out["旧而未知仍在队"] = queue[2]
     return out
 
 
@@ -62,7 +78,7 @@ def main() -> int:
     when = datetime.now(TZ).strftime("%m-%d %H:%M")
     line = "｜".join(f"{k}={now.get(k, 0)}" for k in ("ready", "deferred", "review", "excluded", "account_paused"))
     print(f"[{when}] 守卫计数：{line}｜review 带未确认写={now.get('review_带in_flight', 0)}｜"
-          f"三连队列={now.get('三连队列深度', 0)}（其中时间未知 {now.get('其中时间未知', 0)}）")
+          f"三连队列={now.get('三连队列深度', 0)}（其中时间未知 {now.get('其中时间未知', 0)}、旧而未知 {now.get('旧而未知仍在队', 0)}）")
 
     alarms = []
     for key in ("deferred", "review", "account_paused"):
